@@ -1,0 +1,28 @@
+--cpu=Cortex-M4.fp.sp
+"bootsconverter\startup_stm32f401xe.o"
+"bootsconverter\main.o"
+"bootsconverter\stm32f4xx_it.o"
+"bootsconverter\stm32f4xx_hal_msp.o"
+"bootsconverter\stm32f4xx_hal_adc.o"
+"bootsconverter\stm32f4xx_hal_adc_ex.o"
+"bootsconverter\stm32f4xx_hal_rcc.o"
+"bootsconverter\stm32f4xx_hal_rcc_ex.o"
+"bootsconverter\stm32f4xx_hal_flash.o"
+"bootsconverter\stm32f4xx_hal_flash_ex.o"
+"bootsconverter\stm32f4xx_hal_flash_ramfunc.o"
+"bootsconverter\stm32f4xx_hal_gpio.o"
+"bootsconverter\stm32f4xx_hal_dma_ex.o"
+"bootsconverter\stm32f4xx_hal_dma.o"
+"bootsconverter\stm32f4xx_hal_pwr.o"
+"bootsconverter\stm32f4xx_hal_pwr_ex.o"
+"bootsconverter\stm32f4xx_hal_cortex.o"
+"bootsconverter\stm32f4xx_hal.o"
+"bootsconverter\stm32f4xx_hal_exti.o"
+"bootsconverter\stm32f4xx_hal_tim.o"
+"bootsconverter\stm32f4xx_hal_tim_ex.o"
+"bootsconverter\stm32f4xx_hal_uart.o"
+"bootsconverter\system_stm32f4xx.o"
+--strict --scatter "BootsConverter\BootsConverter.sct"
+--summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list "BootsConverter.map" -o BootsConverter\BootsConverter.axf
