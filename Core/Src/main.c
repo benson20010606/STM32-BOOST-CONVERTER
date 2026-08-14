@@ -31,6 +31,7 @@ typedef struct
 {
     uint32_t adc_raw;
     uint32_t adc_mv;
+		uint32_t vout_mv;
     uint32_t sample_count;
 } Measurement_t;
 /* USER CODE END PTD */
@@ -42,6 +43,10 @@ typedef struct
 
 #define PWM_DUTY_MAX_PERMILLE       600U
 #define PWM_DUTY_INIT_PERMILLE      300U
+
+
+#define FB_R_TOP_OHM               20000U
+#define FB_R_BOTTOM_OHM            10000U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -81,6 +86,8 @@ static void App_Start(void);
 
 static uint32_t ADC_RawToMilliVolts(uint32_t raw);
 static void Measurement_Update(uint32_t raw);
+static uint32_t Feedback_ADCToVoutMilliVolts(uint32_t adc_mv);
+
 
 static void PWM_SetDutyPermille(uint16_t duty_permille);
 
@@ -107,8 +114,17 @@ static void Measurement_Update(uint32_t raw)
 {
     measurement.adc_raw = raw;
     measurement.adc_mv = ADC_RawToMilliVolts(raw);
+	  measurement.vout_mv = Feedback_ADCToVoutMilliVolts( measurement.adc_mv);
     measurement.sample_count++;
 }
+
+static uint32_t Feedback_ADCToVoutMilliVolts(uint32_t adc_mv)
+{
+    return (adc_mv * (FB_R_TOP_OHM + FB_R_BOTTOM_OHM))
+           / FB_R_BOTTOM_OHM;
+}
+
+
 
 static void PWM_SetDutyPermille(uint16_t duty_permille)
 {
@@ -198,14 +214,15 @@ static void Telemetry_Service(void)
     uint32_t adc_mv = measurement.adc_mv;
     uint32_t count = measurement.sample_count;
     uint16_t duty = pwm_duty_permille;
-
+		uint32_t vout_mv = measurement.vout_mv;
 		
 		int len = snprintf(
 				uart_tx_buf,
 				sizeof(uart_tx_buf),
-				"adc=%lu, vadc=%lu mV, duty=%u.%u%%, count=%lu \r\n",
+				"adc=%lu, vadc=%lu mV, vout=%lu mV, duty=%u.%u%%, count=%lu\r\n",
 				(unsigned long)raw,
 				(unsigned long)adc_mv,
+				(unsigned long)vout_mv,
 				duty / 10U,
 				duty % 10U,
 				(unsigned long)count
