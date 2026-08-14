@@ -27,12 +27,21 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct
+{
+    uint32_t adc_raw;
+    uint32_t adc_mv;
+    uint32_t sample_count;
+} Measurement_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define ADC_FULL_SCALE              4095U
+#define ADC_VREF_MV                 3300U
 
+#define PWM_DUTY_MAX_PERMILLE       600U
+#define PWM_DUTY_INIT_PERMILLE      300U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -43,12 +52,20 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
+
+static volatile Measurement_t measurement = {0};
+static volatile uint16_t pwm_duty_permille = 0;
+static volatile uint8_t telemetry_due = 0;
+static volatile uint8_t uart_tx_busy = 0;
+static char uart_tx_buf[96];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -57,79 +74,221 @@ static void MX_GPIO_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
+static void App_Start(void);
 
+static uint32_t ADC_RawToMilliVolts(uint32_t raw);
+static void Measurement_Update(uint32_t raw);
+
+static void PWM_SetDutyPermille(uint16_t duty_permille);
+
+static void Control_Update(uint32_t feedback_mv);
+
+static void Telemetry_Request(void);
+static void Telemetry_Service(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-/* USER CODE BEGIN 0 */
 
-/* USER CODE BEGIN 0 */
-
-uint8_t UART_ReadDuty(void)
+static uint32_t ADC_RawToMilliVolts(uint32_t raw)
 {
-    uint8_t ch;
-    char buffer[4] = {0};
-    uint8_t index = 0;
-    uint16_t duty = 0;
-
-    while (1)
+    if (raw > ADC_FULL_SCALE)
     {
-        /* ???? byte */
-        if (HAL_UART_Receive(&huart2, &ch, 1, HAL_MAX_DELAY) != HAL_OK)
-        {
-            continue;
-        }
-
-        /* ????:?? echo ? PuTTY */
-        if (ch >= '0' && ch <= '9')
-        {
-            if (index < 3)
-            {
-                buffer[index++] = ch;
-
-                HAL_UART_Transmit(&huart2,
-                                  &ch,
-                                  1,
-                                  HAL_MAX_DELAY);
-            }
-        }
-
-        /* Enter */
-        else if (ch == '\r' || ch == '\n')
-        {
-            if (index == 0)
-            {
-                continue;
-            }
-
-            HAL_UART_Transmit(&huart2,
-                              (uint8_t *)"\r\n",
-                              2,
-                              HAL_MAX_DELAY);
-
-            break;
-        }
+        raw = ADC_FULL_SCALE;
     }
 
-    /* ASCII -> integer */
-    for (uint8_t i = 0; i < index; i++)
-    {
-        duty = duty * 10U + (buffer[i] - '0');
-    }
-
-    if (duty > 100)
-    {
-        duty = 100;
-    }
-
-    return (uint8_t)duty;
+    return (raw * ADC_VREF_MV) / ADC_FULL_SCALE;
 }
 
-/* USER CODE END 0 */
+static void Measurement_Update(uint32_t raw)
+{
+    measurement.adc_raw = raw;
+    measurement.adc_mv = ADC_RawToMilliVolts(raw);
+    measurement.sample_count++;
+}
 
-/* USER CODE END 0 */
+static void PWM_SetDutyPermille(uint16_t duty_permille)
+{
+    if (duty_permille > PWM_DUTY_MAX_PERMILLE)
+    {
+        duty_permille = PWM_DUTY_MAX_PERMILLE;
+    }
+
+    uint32_t arr =
+        __HAL_TIM_GET_AUTORELOAD(&htim3);
+
+    uint32_t ccr =
+        ((uint32_t)duty_permille * (arr + 1U)) / 1000U;
+
+    __HAL_TIM_SET_COMPARE(
+        &htim3,
+        TIM_CHANNEL_1,
+        ccr
+    );
+
+    pwm_duty_permille = duty_permille;
+}
+
+
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM4)
+    {
+       Telemetry_Request();
+    }
+}
+
+
+static void Control_Update(uint32_t feedback_mv)
+{
+    /*
+     * Controller will be implemented later.
+     *
+     * Future:
+     *
+     * feedback_mv
+     *      
+     * Vout conversion
+     *      
+     * error
+     *      
+     * PI
+     *      
+     * duty command
+     *      
+     * PWM_SetDutyPermille()
+     */
+
+    (void)feedback_mv;
+}
+
+static void Telemetry_Request(void)
+{
+    telemetry_due = 1U;
+}
+
+
+static void Telemetry_Service(void)
+{
+    /*
+     * Nothing to send.
+     */
+    if (telemetry_due == 0U)
+    {
+        return;
+    }
+
+    /*
+     * Previous interrupt-driven UART transmission
+     * has not completed yet.
+     */
+    if (uart_tx_busy != 0U)
+    {
+        return;
+    }
+
+    /*
+     * Snapshot shared data.
+     */
+    uint32_t raw = measurement.adc_raw;
+    uint32_t adc_mv = measurement.adc_mv;
+    uint32_t count = measurement.sample_count;
+    uint16_t duty = pwm_duty_permille;
+
+		
+		int len = snprintf(
+				uart_tx_buf,
+				sizeof(uart_tx_buf),
+				"adc=%lu, vadc=%lu mV, duty=%u.%u%%, count=%lu \r\n",
+				(unsigned long)raw,
+				(unsigned long)adc_mv,
+				duty / 10U,
+				duty % 10U,
+				(unsigned long)count
+		);
+
+    if (len <= 0)
+    {
+        return;
+    }
+
+    if ((uint32_t)len >= sizeof(uart_tx_buf))
+    {
+        len = sizeof(uart_tx_buf) - 1U;
+    }
+
+    /*
+     * Consume current telemetry request.
+     */
+    telemetry_due = 0U;
+
+    /*
+     * Buffer must not be modified until
+     * HAL_UART_TxCpltCallback().
+     */
+    uart_tx_busy = 1U;
+
+    if (HAL_UART_Transmit_IT(
+            &huart2,
+            (uint8_t *)uart_tx_buf,
+            (uint16_t)len) != HAL_OK)
+    {
+        /*
+         * Transmission failed to start.
+         * Release buffer and retry later.
+         */
+        uart_tx_busy = 0U;
+        telemetry_due = 1U;
+    }
+}
+
+static void App_Start(void)
+{
+    /*
+     * 
+     * Start PWM from nominal 30% duty.
+     */
+    PWM_SetDutyPermille(PWM_DUTY_INIT_PERMILLE);
+
+    if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /*
+     * ADC is armed first.
+     * Actual conversions are triggered by TIM2 TRGO.
+     */
+    if (HAL_ADC_Start_IT(&hadc1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /*
+     * TIM2:
+     * 5 kHz TRGO for ADC.
+     * No TIM2 interrupt.
+     */
+    if (HAL_TIM_Base_Start(&htim2) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /*
+     * TIM4:
+     * 50 Hz telemetry scheduler.
+     */
+    if (HAL_TIM_Base_Start_IT(&htim4) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+
 /* USER CODE END 0 */
 
 /**
@@ -164,70 +323,34 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
+  MX_TIM2_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
-/* USER CODE BEGIN 2 */
 
-/* USER CODE BEGIN 2 */
 
-if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
-{
-    Error_Handler();
-}
 
-char msg[] = "\r\nSTM32 READY\r\nEnter Duty (0-100): ";
 
-HAL_UART_Transmit(&huart2,
-                  (uint8_t *)msg,
-                  sizeof(msg) - 1,
-                  HAL_MAX_DELAY);
+	char msg[] = "\r\nSTM32 BOOST CONTROLLER READY\r\n";
 
-/* USER CODE END 2 */
+	HAL_UART_Transmit(
+			&huart2,
+			(uint8_t *)msg,
+			sizeof(msg) - 1U,
+			HAL_MAX_DELAY
+	);
+	App_Start();
 
-/* USER CODE END 2 */
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
-  {
-    /* USER CODE END WHILE */
-  uint8_t duty;
+  {  
+		
+		/* USER CODE END WHILE */
 
-    /* UART ?? Duty */
-    duty = UART_ReadDuty();
-
-    /*
-     * ARR = 839
-     * PWM period = 840 counts
-     */
-    uint32_t ccr = ((uint32_t)duty * 840U) / 100U;
-
-    /* ?? PWM Duty */
-    __HAL_TIM_SET_COMPARE(&htim3,
-                          TIM_CHANNEL_1,
-                          ccr);
-
-    /* ??????? */
-			char msg[64];
-
-			int len = snprintf(msg,
-												 sizeof(msg),
-												 "[stm32] duty: %u ccr: %lu\r\n",
-												 duty,
-												 (unsigned long)ccr);
-
-			HAL_UART_Transmit(&huart2,
-												(uint8_t *)msg,
-												len,
-												HAL_MAX_DELAY);
-    /* ??????? */
-    char prompt[] = "Enter Duty (0-100): ";
-
-    HAL_UART_Transmit(&huart2,
-                      (uint8_t *)prompt,
-                      sizeof(prompt) - 1,
-                      HAL_MAX_DELAY);
     /* USER CODE BEGIN 3 */
+		Telemetry_Service();
   }
   /* USER CODE END 3 */
 }
@@ -304,8 +427,8 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ScanConvMode = DISABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T2_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DMAContinuousRequests = DISABLE;
@@ -319,7 +442,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_84CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -327,6 +450,51 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 83;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 199;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
@@ -386,6 +554,51 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 83;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 19999;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
 
 }
 
@@ -462,6 +675,27 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    if (hadc->Instance == ADC1)
+    {
+        uint32_t raw = HAL_ADC_GetValue(hadc);
+
+        Measurement_Update(raw);
+
+        Control_Update(measurement.adc_mv);
+    }
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        uart_tx_busy = 0U;
+
+    }
+}
+
 
 /* USER CODE END 4 */
 
