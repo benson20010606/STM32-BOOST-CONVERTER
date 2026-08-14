@@ -27,6 +27,33 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
+
+
+
+
+/*-----------------------------------------------------------
+ * Stores ADC and output-voltage measurement data.
+ *
+ * adc_raw:
+ *     Raw 12-bit ADC conversion result.
+ *     Valid range: 0 ~ 4095.
+ *
+ * adc_mv:
+ *     Voltage measured directly at the ADC input pin
+ *     (PA0 / ADC1_IN0), in millivolts.
+ *
+ * vout_mv:
+ *     Reconstructed Boost converter output voltage
+ *     calculated from the feedback divider ratio.
+ *
+ * sample_count:
+ *     Incremented after every ADC conversion.
+ *     Since the ADC sampling rate is 5 kHz,
+ *     this counter increases approximately 5000 times
+ *     per second.
+ ------------------------------------------------------------*/
+
+
 typedef struct
 {
     uint32_t adc_raw;
@@ -34,18 +61,234 @@ typedef struct
 		uint32_t vout_mv;
     uint32_t sample_count;
 } Measurement_t;
+
+
+/*-------------------------------------------------
+ * Stores PI controller parameters, dynamic states,
+ * and protection states.
+ *
+ * vref_mv:
+ *     Target output voltage in millivolts.
+ *
+ * error_mv:
+ *     Voltage regulation error:
+ *
+ *         error = Vref - Vout
+ *
+ *
+ * kp / ki:
+ *     PI controller gains.
+ *
+ * integral:
+ *     Integral accumulator state:
+ *
+ *         integral += error * Ts
+ *
+ * duty_ff_permille:
+ *     Nominal feed-forward duty cycle.
+ *
+ *     Example:
+ *         300 = 30.0%
+ *
+ * duty_min_permille / duty_max_permille:
+ *     Allowed duty-cycle range during normal
+ *     closed-loop operation.
+ *
+ * enabled:
+ *     Controller enable flag.
+ *     Cleared when a protection fault occurs.
+ *
+ * fault_ovp:
+ *     Latched over-voltage protection flag.
+ *
+ * fb_low_count:
+ *     Number of consecutive low-feedback ADC samples.
+ *
+ * fault_feedback:
+ *     Latched low-feedback fault flag.
+ --------------------------------------------------*/
+
+
+typedef struct
+{
+    uint32_t vref_mv;
+	  int32_t error_mv;
+		
+		float kp;
+		float ki;
+	  float integral;
+
+    uint16_t duty_ff_permille;
+    uint16_t duty_min_permille;
+    uint16_t duty_max_permille;
+
+    uint8_t enabled;
+	  uint8_t fault_ovp;
+	
+		uint16_t fb_low_count;
+	  uint8_t fault_feedback;
+
+} Controller_t;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+
+/* ============================================================
+ * PWM Configuration
+ * ============================================================
+ *
+ * Duty cycle is represented in permille:
+ *
+ *     1000 = 100.0%
+ *      300 =  30.0%
+ *       50 =   5.0%
+ *
+ * Permille representation provides 0.1% resolution
+ * without using floating-point values in the PWM driver.
+ */
+
+/*
+ * Absolute PWM duty-cycle limit.
+ *
+ * PWM_SetDutyPermille() will never allow the PWM output
+ * to exceed this value, even if the controller generates
+ * an invalid command.
+ */
+
+
+#define PWM_DUTY_MAX_PERMILLE           600U
+/* ============================================================
+ * Controller Configuration
+ * ============================================================ */
+
+/* Target Boost converter output voltage: 7.0 V */
+
+#define CONTROL_VREF_MV                7000U
+
+/*
+ * Nominal feed-forward duty cycle.
+ *
+ * For an ideal Boost converter:
+ *
+ *     Vout = Vin / (1 - D)
+ *
+ * Therefore:
+ *
+ *     D = 1 - Vin / Vout
+ *
+ * For Vin = 5 V and Vout = 7 V:
+ *
+ *     D = 1 - 5/7
+ *       = 0.286
+ *
+ * A nominal duty cycle of 30% is therefore used.
+ */
+
+#define CONTROL_DUTY_FF_PERMILLE        300U
+
+/*
+ * Allowed duty-cycle range during normal
+ * closed-loop operation:
+ *
+ *     5% <= duty <= 60%
+ *
+ * Protection functions may bypass the minimum duty
+ * and force the PWM output to 0%.
+ */
+
+#define CONTROL_DUTY_MIN_PERMILLE        50U
+#define CONTROL_DUTY_MAX_PERMILLE       600U
+
+/*
+ * Maximum contribution from the integral term.
+ *
+ *     +0.05 = +5% duty correction
+ *     -0.05 = -5% duty correction
+ *
+ * This prevents excessive integral accumulation and
+ * improves recovery after large operating-point changes.
+ */
+
+#define CONTROL_I_TERM_LIMIT    0.1f
+
+/*
+ * Over-voltage protection threshold.
+ *
+ * When reconstructed Vout >= 8.0 V:
+ *
+ *     fault_ovp = 1
+ *     controller is disabled
+ *     PWM duty is forced to 0%
+ *
+ * The fault is latched until MCU reset.
+ */
+
+#define CONTROL_OVP_MV    8000U 
+
+
+/*
+ * Low-feedback protection threshold.
+ *
+ * If Vout remains below 3.0 V for a sufficiently long
+ * period, the feedback path or power stage is considered
+ * abnormal.
+ */
+
+#define CONTROL_FB_LOW_MV            3000U
+
+/*
+ * The control loop runs at 5 kHz.
+ *
+ * 500 samples / 5000 samples/s
+ * = 0.1 s
+ * = 100 ms
+ */
+
+
+#define CONTROL_FB_LOW_COUNT_LIMIT    500U
+
+/* ============================================================
+ * ADC Configuration
+ * ============================================================ */
+
+/*
+ * STM32F401 ADC:
+ *
+ *     Resolution: 12 bit
+ *     Raw range:  0 ~ 4095
+ *
+ * VDDA is currently assumed to be 3.3 V.
+ *
+ * If higher measurement accuracy is required later,
+ * the actual VDDA value can be measured and calibrated.
+ */
+
 #define ADC_FULL_SCALE              4095U
 #define ADC_VREF_MV                 3300U
 
-#define PWM_DUTY_MAX_PERMILLE       600U
-#define PWM_DUTY_INIT_PERMILLE      300U
+/* ============================================================
+ * PI Controller Parameters
+ * ============================================================ */
 
+/*
+ * ADC / controller update frequency:
+ *
+ *     fs = 5 kHz
+ *
+ * Therefore:
+ *
+ *     Ts = 1 / 5000
+ *        = 0.0002 s
+ */
 
-#define FB_R_TOP_OHM               20000U
+#define CONTROL_TS_SEC      0.0002f
+#define CONTROL_KP_TEST    0.02f
+#define CONTROL_KI_TEST     0.05f
+
+#define FB_R_TOP_OHM               47000U
 #define FB_R_BOTTOM_OHM            10000U
 /* USER CODE END PD */
 
@@ -70,7 +313,12 @@ static volatile Measurement_t measurement = {0};
 static volatile uint16_t pwm_duty_permille = 0;
 static volatile uint8_t telemetry_due = 0;
 static volatile uint8_t uart_tx_busy = 0;
-static char uart_tx_buf[96];
+static char uart_tx_buf[128];
+
+
+
+static volatile Controller_t controller = {0};
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -82,17 +330,30 @@ static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
+
+/* Application startup */
 static void App_Start(void);
 
+
+/* Measurement layer */
 static uint32_t ADC_RawToMilliVolts(uint32_t raw);
-static void Measurement_Update(uint32_t raw);
 static uint32_t Feedback_ADCToVoutMilliVolts(uint32_t adc_mv);
+static void Measurement_Update(uint32_t raw);
 
-
+/* PWM abstraction layer */
 static void PWM_SetDutyPermille(uint16_t duty_permille);
 
-static void Control_Update(uint32_t feedback_mv);
+/* PI controller */
+static uint16_t Control_ClampDutyPermille(int32_t duty_permille);
+static void Control_Init(void);
+static void Control_Reset(void);
+static void Control_Update(uint32_t vout_mv);
 
+/* Protection */
+static void Protection_Check(uint32_t vout_mv);
+
+
+/* UART telemetry */
 static void Telemetry_Request(void);
 static void Telemetry_Service(void);
 /* USER CODE END PFP */
@@ -159,28 +420,193 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 
-static void Control_Update(uint32_t feedback_mv)
+static void Control_Init(void)
+{
+    controller.vref_mv = CONTROL_VREF_MV;
+		controller.kp = CONTROL_KP_TEST;
+	  controller.ki = CONTROL_KI_TEST;
+
+    controller.duty_ff_permille =
+        CONTROL_DUTY_FF_PERMILLE;
+
+    controller.duty_min_permille =
+        CONTROL_DUTY_MIN_PERMILLE;
+
+    controller.duty_max_permille =
+        CONTROL_DUTY_MAX_PERMILLE;
+
+    controller.enabled = 1U;
+}
+
+static void Control_Reset(void)
 {
     /*
-     * Controller will be implemented later.
-     *
-     * Future:
-     *
-     * feedback_mv
-     *      
-     * Vout conversion
-     *      
-     * error
-     *      
-     * PI
-     *      
-     * duty command
-     *      
-     * PWM_SetDutyPermille()
+     * Controller dynamic states will be reset here.
+     * Integral state will be added later.
      */
-
-    (void)feedback_mv;
+		controller.error_mv = 0;
+	  controller.integral = 0.0f;
+	  controller.fault_ovp = 0U;
+		controller.fb_low_count = 0U;
+		controller.fault_feedback = 0U;
+	
+    PWM_SetDutyPermille(
+        controller.duty_ff_permille
+    );
 }
+
+
+static void Control_Update(uint32_t vout_mv)
+{
+    if (controller.enabled == 0U)
+    {
+        return;
+    }
+
+    controller.error_mv =
+        (int32_t)controller.vref_mv -
+        (int32_t)vout_mv;
+
+    /* mV -> V */
+    float error_v =
+        (float)controller.error_mv / 1000.0f;
+
+    /* P term */
+    float p_term =
+        controller.kp * error_v;
+
+    /*
+     * Calculate candidate integral first.
+     * Do not immediately store it.
+     */
+    float integral_candidate =
+        controller.integral +
+        error_v * CONTROL_TS_SEC;
+
+    float i_term_candidate =
+        controller.ki * integral_candidate;
+		/*
+		 * Limit integral contribution to -+5% duty.
+		 */
+		if (i_term_candidate > CONTROL_I_TERM_LIMIT)
+		{
+				i_term_candidate = CONTROL_I_TERM_LIMIT;
+
+				integral_candidate =
+						CONTROL_I_TERM_LIMIT / controller.ki;
+		}
+		else if (i_term_candidate < -CONTROL_I_TERM_LIMIT)
+		{
+				i_term_candidate = -CONTROL_I_TERM_LIMIT;
+
+				integral_candidate =
+						-CONTROL_I_TERM_LIMIT / controller.ki;
+		}
+		
+		
+    float duty_ff =
+        (float)controller.duty_ff_permille / 1000.0f;
+
+    float duty_min =
+        (float)controller.duty_min_permille / 1000.0f;
+
+    float duty_max =
+        (float)controller.duty_max_permille / 1000.0f;
+
+    /*
+     * Unsaturated duty using candidate integral.
+     */
+    float duty_unsat =
+        duty_ff +
+        p_term +
+        i_term_candidate;
+
+    /*
+     * Conditional integration anti-windup.
+     *
+     * Stop integrating only when integration would
+     * push the controller further into saturation.
+     */
+    if (!((duty_unsat >= duty_max && error_v > 0.0f) ||
+          (duty_unsat <= duty_min && error_v < 0.0f)))
+    {
+        controller.integral = integral_candidate;
+    }
+
+    /*
+     * Recalculate output using accepted integral.
+     */
+    float i_term =
+        controller.ki * controller.integral;
+
+    float duty_command =
+        duty_ff +
+        p_term +
+        i_term;
+
+    int32_t duty_permille =
+        (int32_t)(duty_command * 1000.0f);
+
+    uint16_t duty =
+        Control_ClampDutyPermille(duty_permille);
+
+    PWM_SetDutyPermille(duty);
+}
+
+static uint16_t Control_ClampDutyPermille(int32_t duty_permille)
+{
+    if (duty_permille < (int32_t)controller.duty_min_permille)
+    {
+        return controller.duty_min_permille;
+    }
+
+    if (duty_permille > (int32_t)controller.duty_max_permille)
+    {
+        return controller.duty_max_permille;
+    }
+
+    return (uint16_t)duty_permille;
+}
+
+static void Protection_Check(uint32_t vout_mv)
+{
+    if (vout_mv >= CONTROL_OVP_MV)
+    {
+        controller.fault_ovp = 1U;
+        controller.enabled = 0U;
+
+        /*
+         * Emergency shutdown.
+         * Bypass controller minimum duty limit.
+         */
+        PWM_SetDutyPermille(0U);
+			  return;
+    }
+		 /*
+     * Abnormally low feedback.
+     * Require 100 ms continuously below threshold.
+     */
+    if (vout_mv < CONTROL_FB_LOW_MV)
+    {
+        if (controller.fb_low_count < CONTROL_FB_LOW_COUNT_LIMIT)
+        {
+            controller.fb_low_count++;
+        }
+
+        if (controller.fb_low_count >= CONTROL_FB_LOW_COUNT_LIMIT)
+        {
+            controller.fault_feedback = 1U;
+            controller.enabled = 0U;
+
+            PWM_SetDutyPermille(0U);
+        }
+    }
+    else
+    {
+        controller.fb_low_count = 0U;
+    }
+}
+
 
 static void Telemetry_Request(void)
 {
@@ -215,19 +641,22 @@ static void Telemetry_Service(void)
     uint32_t count = measurement.sample_count;
     uint16_t duty = pwm_duty_permille;
 		uint32_t vout_mv = measurement.vout_mv;
+		int32_t error_mv = controller.error_mv;
 		
+		uint8_t fault_ovp = controller.fault_ovp;
+		uint8_t fb_fault=controller.fault_feedback;
 		int len = snprintf(
 				uart_tx_buf,
 				sizeof(uart_tx_buf),
-				"adc=%lu, vadc=%lu mV, vout=%lu mV, duty=%u.%u%%, count=%lu\r\n",
-				(unsigned long)raw,
-				(unsigned long)adc_mv,
+				"vout=%lu mV, err=%ld mV, duty=%u.%u%%, ovp=%u,  fb_fault=%u, count=%lu\r\n",
 				(unsigned long)vout_mv,
+				(long)error_mv,
 				duty / 10U,
 				duty % 10U,
+				fault_ovp,
+				fb_fault,
 				(unsigned long)count
 		);
-
     if (len <= 0)
     {
         return;
@@ -265,11 +694,10 @@ static void Telemetry_Service(void)
 
 static void App_Start(void)
 {
-    /*
-     * 
-     * Start PWM from nominal 30% duty.
-     */
-    PWM_SetDutyPermille(PWM_DUTY_INIT_PERMILLE);
+	
+	  Control_Init();
+
+    Control_Reset();
 
     if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
     {
@@ -699,8 +1127,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
         uint32_t raw = HAL_ADC_GetValue(hadc);
 
         Measurement_Update(raw);
-
-        Control_Update(measurement.adc_mv);
+				Protection_Check(measurement.vout_mv);
+        Control_Update(measurement.vout_mv);
     }
 }
 
