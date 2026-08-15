@@ -60,6 +60,14 @@ typedef struct
     uint32_t adc_mv;
 		uint32_t vout_mv;
     uint32_t sample_count;
+	
+	
+	  uint32_t vout_sum_mv;
+    uint32_t vout_avg_mv;
+
+    uint16_t avg_sample_count;
+    uint8_t  avg_valid;
+	
 } Measurement_t;
 
 
@@ -187,8 +195,8 @@ typedef struct
  * A nominal duty cycle of 30% is therefore used.
  */
 
-#define CONTROL_DUTY_FF_PERMILLE        300U
-
+#define CONTROL_DUTY_FF_PERMILLE        286U  
+//200
 /*
  * Allowed duty-cycle range during normal
  * closed-loop operation:
@@ -212,12 +220,12 @@ typedef struct
  * improves recovery after large operating-point changes.
  */
 
-#define CONTROL_I_TERM_LIMIT    0.1f
+#define CONTROL_I_TERM_LIMIT    0.05f
 
 /*
  * Over-voltage protection threshold.
  *
- * When reconstructed Vout >= 8.0 V:
+ * When reconstructed Vout >= 10.0 V:
  *
  *     fault_ovp = 1
  *     controller is disabled
@@ -226,7 +234,7 @@ typedef struct
  * The fault is latched until MCU reset.
  */
 
-#define CONTROL_OVP_MV    8000U 
+#define CONTROL_OVP_MV    10000U 
 
 
 /*
@@ -285,11 +293,16 @@ typedef struct
  */
 
 #define CONTROL_TS_SEC      0.0002f
-#define CONTROL_KP_TEST    0.02f
-#define CONTROL_KI_TEST     0.05f
 
+#define CONTROL_KP_TEST    0.02f
+//0.02f  //0.4
+#define CONTROL_KI_TEST     0.05f
+//0.05f //0.1
 #define FB_R_TOP_OHM               47000U
 #define FB_R_BOTTOM_OHM            10000U
+
+
+#define TELEMETRY_AVG_SAMPLES          100U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -377,6 +390,22 @@ static void Measurement_Update(uint32_t raw)
     measurement.adc_mv = ADC_RawToMilliVolts(raw);
 	  measurement.vout_mv = Feedback_ADCToVoutMilliVolts( measurement.adc_mv);
     measurement.sample_count++;
+	
+	
+		measurement.vout_sum_mv +=
+    measurement.vout_mv;
+    measurement.avg_sample_count++;
+    if (measurement.avg_sample_count >=
+        TELEMETRY_AVG_SAMPLES)
+    {
+        measurement.vout_avg_mv =
+            measurement.vout_sum_mv /
+            TELEMETRY_AVG_SAMPLES;	
+        measurement.avg_valid = 1U;
+        measurement.vout_sum_mv = 0U;
+        measurement.avg_sample_count = 0U;
+    }	
+	
 }
 
 static uint32_t Feedback_ADCToVoutMilliVolts(uint32_t adc_mv)
@@ -636,11 +665,17 @@ static void Telemetry_Service(void)
     /*
      * Snapshot shared data.
      */
+				if (measurement.avg_valid == 0U)
+		{
+				return;
+		}
+				
+		
     uint32_t raw = measurement.adc_raw;
     uint32_t adc_mv = measurement.adc_mv;
     uint32_t count = measurement.sample_count;
     uint16_t duty = pwm_duty_permille;
-		uint32_t vout_mv = measurement.vout_mv;
+		uint32_t vout_mv = measurement.vout_avg_mv;
 		int32_t error_mv = controller.error_mv;
 		
 		uint8_t fault_ovp = controller.fault_ovp;
@@ -648,14 +683,13 @@ static void Telemetry_Service(void)
 		int len = snprintf(
 				uart_tx_buf,
 				sizeof(uart_tx_buf),
-				"vout=%lu mV, err=%ld mV, duty=%u.%u%%, ovp=%u,  fb_fault=%u, count=%lu\r\n",
+				"%lu,%lu,%ld,%u,%u,%u\r\n",
+				(unsigned long)count,
 				(unsigned long)vout_mv,
 				(long)error_mv,
-				duty / 10U,
-				duty % 10U,
+				duty,
 				fault_ovp,
-				fb_fault,
-				(unsigned long)count
+				fb_fault
 		);
     if (len <= 0)
     {
