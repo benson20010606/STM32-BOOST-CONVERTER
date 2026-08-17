@@ -131,13 +131,9 @@ Rbottom = 10 kΩ
 
 因此：
 
-$$
-V_{out}
-=
-V_{ADC}
-\times
-\frac{47k+10k}{10k}
-$$
+
+$$V_{out}=V_{ADC}\times\frac{47k+10k}{10k}$$
+
 
 ADC 由 TIM2 以 **5 kHz** 固定頻率觸發。
 
