@@ -833,11 +833,11 @@ def update_gui():
         duty_canvas,
         time_data,
         duty_data,
-        y_min=10.0,
-        y_max=50.0,
+        y_min=20.0,
+        y_max=70.0,
         title="PWM Duty Cycle",
         unit="Duty (%)",
-        y_tick_step=5.0
+        y_tick_step=10.0
     )
 
 

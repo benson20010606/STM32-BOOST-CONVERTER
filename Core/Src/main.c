@@ -167,7 +167,9 @@ typedef struct
  */
 
 
-#define PWM_DUTY_MAX_PERMILLE           600U
+#define PWM_DUTY_MAX_PERMILLE           650U
+
+
 /* ============================================================
  * Controller Configuration
  * ============================================================ */
@@ -195,33 +197,34 @@ typedef struct
  * A nominal duty cycle of 30% is therefore used.
  */
 
-#define CONTROL_DUTY_FF_PERMILLE        286U  
+#define CONTROL_DUTY_FF_PERMILLE        400U  
 //200
 /*
  * Allowed duty-cycle range during normal
  * closed-loop operation:
  *
- *     5% <= duty <= 60%
+ *     15% <= duty <= 65%
  *
  * Protection functions may bypass the minimum duty
  * and force the PWM output to 0%.
  */
 
-#define CONTROL_DUTY_MIN_PERMILLE        50U
-#define CONTROL_DUTY_MAX_PERMILLE       600U
+#define CONTROL_DUTY_MIN_PERMILLE       150U
+#define CONTROL_DUTY_MAX_PERMILLE       650U
+
 
 /*
  * Maximum contribution from the integral term.
  *
- *     +0.05 = +5% duty correction
- *     -0.05 = -5% duty correction
+ *     +0.3 = +30% duty correction
+ *     -0.3 = -30% duty correction
  *
  * This prevents excessive integral accumulation and
  * improves recovery after large operating-point changes.
  */
 
-#define CONTROL_I_TERM_LIMIT    0.05f
-
+#define CONTROL_I_TERM_LIMIT    0.15f
+//0.05
 /*
  * Over-voltage protection threshold.
  *
@@ -294,9 +297,9 @@ typedef struct
 
 #define CONTROL_TS_SEC      0.0002f
 
-#define CONTROL_KP_TEST    0.02f
+#define CONTROL_KP_TEST    0.05f
 //0.02f  //0.4
-#define CONTROL_KI_TEST     0.05f
+#define CONTROL_KI_TEST     0.1f
 //0.05f //0.1
 #define FB_R_TOP_OHM               47000U
 #define FB_R_BOTTOM_OHM            10000U
