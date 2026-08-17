@@ -131,13 +131,13 @@ Rbottom = 10 kΩ
 
 因此：
 
-\[
+$$
 V_{out}
 =
 V_{ADC}
 \times
 \frac{47k+10k}{10k}
-\]
+$$
 
 ADC 由 TIM2 以 **5 kHz** 固定頻率觸發。
 
@@ -198,21 +198,11 @@ Control Update Frequency =  5 kHz
 
 控制誤差：
 
-\[
-e = V_{ref}-V_{out}
-\]
+$$e = V_{ref}-V_{out}$$
 
 PWM Duty：
 
-\[
-Duty
-=
-Duty_{FF}
-+
-K_p e
-+
-K_i\int e\,dt
-\]
+$$ Duty = Duty_{FF}+K_p +K_i\int e\,dt$$
 
 控制目標：
 
