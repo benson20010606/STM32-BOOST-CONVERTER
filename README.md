@@ -239,9 +239,9 @@ ADC Sampling Rate 為：
 
 每 100 次 ADC Measurement 計算一次平均值：
 
-\[
+$$
 5000 / 100 = 50Hz
-\]
+$$
 
 因此 UART 顯示資料約以 **50 Hz** 更新。
 
